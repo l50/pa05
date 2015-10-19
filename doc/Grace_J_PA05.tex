@@ -56,7 +56,14 @@ To determine if this was causing an issue, I moved the Balance calculation for B
  
 This almost nearly eliminated any issues that I was seeing before, with a few exceptions that were very small discrepancies. \\
 
-After looking at the code a bit more, I came to realize that the variable balance is shared between the two threads that we create while running the program. As a result, they are accessing the variable without any protection, which in turn gives us the sporadic behavior we're seeing. The behavior became less prevalent when we took the latency being introduced by all of the floating point calculations out of the equation, but it did not completely resolve the issue. In fact, this issue will persist until a form of protection is introduced into the program.
+After looking at the code a bit more, I came to realize that the variable balance is shared between the two threads that we create while running the program. \\
+
+To confirm this might be causing an issue, I used valgrind:
+\begin{lstlisting}
+valgrind --tool=helgrind ./race -v
+\end{lstlisting}
+
+The threads accessing the variable without any protection appear to be the catalyst of the sporadic behavior I saw when executing the program. The behavior became less prevalent when I took the latency being introduced by all of the floating point calculations out of the equation, but it did not completely resolve the issue. In fact, this issue will persist until a form of protection is introduced into the program.
 
 
 \end{document}
