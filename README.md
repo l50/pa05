@@ -7,7 +7,7 @@ The fifth programming assignment for operating systems class at UNM (CS-481) by 
 ## Contributing
 Please fork and do a pull request when you've created a feature that you want to be added.
 
-### Todo
+### To-Do
 - [] Finish 1a
 - [] Finish 1b
 - [] Finish 1c
