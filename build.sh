@@ -5,6 +5,7 @@ for i in `seq 1 20`;
 do
     # ./a.out
     ./race
+#    valgrind --tool=helgrind ./a.out
     printf "\n"
 done
 
