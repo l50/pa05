@@ -23,11 +23,11 @@ void *MakeTransactions()
     if (((tmp1 = Bank.balance[0]) + rint) >= 0 && ((tmp2 = Bank.balance[1]) - rint) >= 0) 
     {
       Bank.balance[0] = tmp1 + rint;
-      Bank.balance[1] = tmp2 - rint;
       for (j = 0; j < rint * 100; j++) 
       {
         dummy = 2.345 * 8.765 / 1.234;
       }
+      Bank.balance[1] = tmp2 - rint;
     }
   }
   return NULL;
