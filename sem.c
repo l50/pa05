@@ -38,7 +38,7 @@ void Sem437P(Sem437* sem)
 }
 
 /**
-* @bried Used for incrementing
+* @brief Used for incrementing
 * @param sem semaphore to increment
 */
 void Sem437V(Sem437* sem)
