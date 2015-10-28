@@ -1,3 +1,9 @@
+/**
+ * @file   sem.c
+ * @author Jayson Grace (jaysong@unm.edu)
+ * @date   9/27/2015
+ * @brief  Semaphore for PA05, part 1.
+ */
 #include <pthread.h>
 
 typedef struct
@@ -12,10 +18,10 @@ void Sem437P(Sem437*);
 void Sem437V(Sem437*);
 
 /**
-* @brief Used to initialize the mutex and condition variable
-* @param sem semaphore to initialize
-* @param i value to associate with the semaphore
-*/
+ * @brief Used to initialize the mutex and condition variable
+ * @param sem semaphore to initialize
+ * @param i value to associate with the semaphore
+ */
 void Sem437Init(Sem437* sem, int i)
 {
     sem->S = i;
@@ -24,9 +30,9 @@ void Sem437Init(Sem437* sem, int i)
 }
 
 /**
-* @brief Used for decrementing
-* @param sem semaphore to decrement
-*/
+ * @brief Used for decrementing
+ * @param sem semaphore to decrement
+ */
 void Sem437P(Sem437* sem)
 {
     pthread_mutex_lock(&sem->mut);
@@ -38,9 +44,9 @@ void Sem437P(Sem437* sem)
 }
 
 /**
-* @brief Used for incrementing
-* @param sem semaphore to increment
-*/
+ * @brief Used for incrementing
+ * @param sem semaphore to increment
+ */
 void Sem437V(Sem437* sem)
 {
     pthread_mutex_lock(&sem->mut);
