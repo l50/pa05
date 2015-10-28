@@ -8,9 +8,14 @@ The fifth programming assignment for operating systems class at UNM (CS-481) by 
 Please fork and do a pull request when you've created a feature that you want to be added.
 
 ### To-Do
-- [] Finish 1a
-- [] Finish 1b
-- [] Finish 1c
+- [x] Finish 1a
+- [x] Finish 1b
+- [x] Finish 1c
+- [] Add -M, -C, -S args
+- [] Implement protection of global data
+- [] Test code w/ small number of arrivals and short simulation time
+- [] Fill table with data required
+- [] Answer specified questions in spec.
 - [] Finish 2a
 - [] Finish 2b
 - [] Finish 2c
