@@ -11,7 +11,7 @@
 // INT_MAX in limits.h, "const int INT_MAX = 0x7FFFFFFF;"
 typedef enum {true=1, false=0} Bool;
 #define MAXQLEN 200
-#define WORKTHREADNUM 17
+#define WORKTHREADNUM threadCount
 #define THREADSTACK  65536
 
 //****************************************************************
@@ -91,6 +91,8 @@ double meanR=10.0, meanW = 2.0, gbTstart;
 
 // Used to specify random seed
 int seed=1;
+
+int threadCount = 17;
 
 static pthread_mutex_t gbLock = PTHREAD_MUTEX_INITIALIZER; 
 static pthread_mutex_t gbRLock = PTHREAD_MUTEX_INITIALIZER; 
@@ -305,8 +307,8 @@ int main(int argc, char *argv[]) {
         case 'Y': constT2write=atoi(optarg);
                   printf("option -Y Time to write secs =%03ds \n", constT2write);
                   break;
-        case 'M': numwk=atoi(optarg);
-                  printf("option -M Number of worker threads =%03ds \n", numwk);
+        case 'M': WORKTHREADNUM=atoi(optarg);
+                  printf("option -M Number of worker threads =%03ds \n", WORKTHREADNUM);
                   break;
         case 'C': data.roomRmax=atoi(optarg);
                   printf("option -C Max readers allowed in the room =%03ds \n", data.roomRmax);
