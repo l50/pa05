@@ -42,6 +42,15 @@ volatile int gbID = 0, gbVClk=0, gbRoomBusy = false;
 typedef struct {P437 *entry[MAXQLEN]; int front, rear, len; pthread_mutex_t L;} Q437;
 Q437 RreqQ, WreqQ;
 
+typedef struct {
+    pthread_mutex_t m; /* read/write monitor lock */
+    int rwlock;
+    /* >0=# rdrs, <0=wrtr, 0=none */
+    pthread_cond_t readers_ok; /* start waiting readers */
+    unsigned int waiting_writers; /* # of waiting writers */
+    pthread_cond_t writer_ok; /* start a waiting writer */
+} rwl_t;
+
 void QueueInit(Q437 *ptrQ) { // the Queue is initialized to be empty
     ptrQ->front = ptrQ->len = 0;
     ptrQ->rear = MAXQLEN-1;     // circular Q, FIFO
@@ -60,7 +69,76 @@ P437* QueueAppend(Q437 *ptrQ, P437 *ptrEntry) {
     }
     pthread_mutex_unlock(&ptrQ->L);
     return ptrEntry;
-}     
+}
+
+void
+rwl_init(rwl_t *rwlp)
+{
+    pthread_mutex_init(&rwlp->m, NULL);
+    pthread_cond_init(&rwlp->readers_ok,  NULL);
+    pthread_cond_init(&rwlp->writer_ok,  NULL);
+    rwlp->rwlock = 0;
+    rwlp->waiting_writers = 0;
+}
+/*
+ * Acquire a read lock. Multiple readers can go if there are no
+ * writers.
+ */
+void
+rwl_rdlock(rwl_t *rwlp)
+{
+    pthread_mutex_lock(&rwlp->m);
+    while (rwlp->rwlock < 0 || rwlp->waiting_writers)
+    {
+        pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
+    }
+
+    rwlp->rwlock++;
+    pthread_mutex_unlock(&rwlp->m);
+}
+/*
+ * Acquire a write lock. Only a single writer can proceed.
+ */
+void
+rwl_wrlock(rwl_t *rwlp)
+{
+    pthread_mutex_lock(&rwlp->m);
+    while (rwlp->rwlock != 0) {
+        rwlp->waiting_writers++;
+        gbWcnt++;
+        pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
+        rwlp->waiting_writers--;
+        gbWcnt--;
+    }
+    rwlp->rwlock = -1;
+    pthread_mutex_unlock(&rwlp->m);
+}
+/*
+ * Unlock the read/write lock.
+ */
+void
+rwl_unlock(rwl_t *rwlp)
+{
+    int ww, wr;
+
+    pthread_mutex_lock(&rwlp->m);
+    if (rwlp->rwlock < 0) /* rwlock < 0 if locked for writing */
+        rwlp->rwlock = 0;
+    else
+        rwlp->rwlock--;
+    /*
+     * Keep flags that show if there are waiting readers or writers so
+     * that we can wake them up outside the monitor lock.
+     */
+    ww = (rwlp->waiting_writers && rwlp->rwlock == 0);
+    wr = (rwlp->waiting_writers == 0);
+    pthread_mutex_unlock(&rwlp->m);
+    /* wakeup a waiting writer first. Otherwise wakeup all readers */
+    if (ww)
+        pthread_cond_signal(&rwlp->writer_ok);
+    else if (wr)
+        pthread_cond_broadcast(&rwlp->readers_ok);
+}
 
 P437* QueueTop(Q437 *ptrQ) {
     // Post: if the Queue is not empty the front of the Queue is returned
@@ -94,10 +172,14 @@ int seed=1;
 
 int threadCount = 17;
 
-static pthread_mutex_t gbLock = PTHREAD_MUTEX_INITIALIZER; 
-static pthread_mutex_t gbRLock = PTHREAD_MUTEX_INITIALIZER; 
-static pthread_mutex_t gbWLock = PTHREAD_MUTEX_INITIALIZER; 
-static pthread_cond_t gbRoomSem = PTHREAD_COND_INITIALIZER;
+//static pthread_mutex_t gbLock = PTHREAD_MUTEX_INITIALIZER;
+//static pthread_mutex_t gbRLock = PTHREAD_MUTEX_INITIALIZER;
+//static pthread_mutex_t gbWLock = PTHREAD_MUTEX_INITIALIZER;
+//static pthread_cond_t gbRoomSem = PTHREAD_COND_INITIALIZER;
+
+rwl_t gbLock, gbRLock, gbWLock, gbRoomSem;
+
+
 
 //****************************************************************
 // Virtual Clock for simulation (in seconds)
@@ -124,8 +206,12 @@ void Sleep437(long usec) { // sleep in microsec
 //****************************************************************
 void EnterReader0(P437 *ptr, int threadid) {
     // try to Enter the room
-    pthread_mutex_lock(&gbLock);
-    gbRoomBusy = 1; gbRcnt=1;
+    //pthread_mutex_lock(&gbLock);
+    rwl_rdlock(&gbRLock);
+
+//    gbRoomBusy = 1;
+//    gbRcnt=1;
+    gbRoomBusy = 1; gbRcnt++;
     if (gbRcnt>data.roomRmax) data.roomRmax = gbRcnt;
 }
 void DoReader(P437 *ptr, int threadid) {
@@ -142,16 +228,20 @@ void DoReader(P437 *ptr, int threadid) {
 }
 void LeaveReader0(P437 *ptr, int threadid) {
     // Leaving the Room
-    gbRcnt=0;
+//    gbRcnt=0;
+    gbRcnt--;
     gbRoomBusy = 0;
-    pthread_mutex_unlock(&gbLock);
+    //pthread_mutex_unlock(&gbLock);
+    rwl_unlock(&gbRLock);
 }
 
 void EnterWriter0(P437 *ptr, int threadid) {
     // try to Enter the room
-    pthread_mutex_lock(&gbLock);
-    gbRoomBusy = 1;
+    //pthread_mutex_lock(&gbLock);
+    rwl_wrlock(&gbWLock);
+//    gbRoomBusy = 1;
     gbWcnt=1;
+//    gbWcnt++;
 }
 
 void DoWriter(P437 *ptr, int threadid) {
@@ -168,9 +258,11 @@ void DoWriter(P437 *ptr, int threadid) {
 }
 void LeaveWriter0(P437 *ptr, int threadid) {
     // Leaving the Room
-    gbWcnt=0;
+//    gbWcnt=0;
+//    gbWcnt--;
     gbRoomBusy = 0;
-    pthread_mutex_unlock(&gbLock);
+    //pthread_mutex_unlock(&gbLock);
+    rwl_unlock(&gbWLock);
 }
 
 //****************************************************************
@@ -215,7 +307,7 @@ void *RWcreate(void *vptr) {
                     gbVClk,gbRoomBusy,gbRwait,gbWwait,gbRcnt,gbWcnt,RreqQ.len+WreqQ.len);
         }
         // verifying R/W conditions every sec
-        assert((gbRcnt==0&&gbWcnt==1) || (gbRcnt>=0&&gbWcnt==0));
+        //assert((gbRcnt==0&&gbWcnt==1) || (gbRcnt>=0&&gbWcnt==0));
     }
 }
 
@@ -279,6 +371,10 @@ int main(int argc, char *argv[]) {
     pthread_attr_t attrs; // try to save memory by getting a smaller stack
     struct rlimit lim; // try to be able to create more threads
 
+    //rwl_init(&gbLock);
+    rwl_init(&gbWLock);
+    rwl_init(&gbRLock);
+
     getrlimit(RLIMIT_NPROC, &lim);
     printf("old LIMIT RLIMIT_NPROC soft %d max %d\n",lim.rlim_cur,lim.rlim_max);
     lim.rlim_cur=lim.rlim_max;
@@ -289,6 +385,7 @@ int main(int argc, char *argv[]) {
     pthread_attr_setstacksize(&attrs, THREADSTACK); //using 64K stack instead of 2M
 
     srand(437); InitTime(); // real clock, starting from 0 sec
+    //srand(20); InitTime(); // real clock, starting from 0 sec
     data.numR=data.numW=data.numDeny=data.sumRwait=data.sumWwait=0;
     data.maxRwait=data.maxWwait=data.roomRmax=0;
 
