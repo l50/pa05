@@ -13,7 +13,7 @@ typedef enum {true=1, false=0} Bool;
 #define MAXQLEN 200
 #define WORKTHREADNUM threadCount
 #define THREADSTACK  65536
-
+int constPriority; //selects the case
 //****************************************************************
 // Math function to produce poisson distribution based on mean
 //****************************************************************
@@ -88,6 +88,46 @@ void
 rwl_rdlock(rwl_t *rwlp)
 {
     pthread_mutex_lock(&rwlp->m);
+    while (rwlp->rwlock < 0)
+    {
+        gbRwait++; // Increment the number of waiting readers in the queue
+        pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
+        gbRwait--; // Decrement the number of waiting readers in the queue
+    }
+
+    // Set room to busy and increment the number of readers in the room
+    gbRoomBusy = 1; gbRcnt++;
+    rwlp->rwlock++;
+    pthread_mutex_unlock(&rwlp->m);
+}
+/*
+ * Acquire a read lock. Multiple readers can go if there are no
+ * writers.
+ */
+void
+rwl_rdlock2(rwl_t *rwlp)
+{
+    pthread_mutex_lock(&rwlp->m);
+    while (rwlp->rwlock < 0 || gbRcnt == data.roomRmax)
+    {
+        gbRwait++; // Increment the number of waiting readers in the queue
+        pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
+        gbRwait--; // Decrement the number of waiting readers in the queue
+    }
+
+    // Set room to busy and increment the number of readers in the room
+    gbRoomBusy = 1; gbRcnt++;
+    rwlp->rwlock++;
+    pthread_mutex_unlock(&rwlp->m);
+}
+/*
+ * Acquire a read lock. Multiple readers can go if there are no
+ * writers.
+ */
+void
+rwl_rdlock3(rwl_t *rwlp)
+{
+    pthread_mutex_lock(&rwlp->m);
     while (rwlp->rwlock < 0 || rwlp->waiting_writers)
     {
         gbRwait++; // Increment the number of waiting readers in the queue
@@ -107,7 +147,7 @@ void
 rwl_wrlock(rwl_t *rwlp)
 {
     pthread_mutex_lock(&rwlp->m);
-    while (rwlp->rwlock != 0) {
+    while (rwlp->rwlock != 0 || gbRwait != 0) {
         rwlp->waiting_writers++;
         gbWwait++;  // Increment the number of writers waiting in the queue
         pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
@@ -149,12 +189,23 @@ rwl_unlock(rwl_t *rwlp)
     ww = (rwlp->waiting_writers && rwlp->rwlock == 0);
     wr = (rwlp->waiting_writers == 0);
     pthread_mutex_unlock(&rwlp->m);
-    /* wakeup a waiting writer first. Otherwise wakeup all readers */
-    if (ww)
-        pthread_cond_signal(&rwlp->writer_ok);
-    else if (wr)
-        pthread_cond_broadcast(&rwlp->readers_ok);
 
+    if (constPriority == 3)
+    {
+        if (ww)
+            pthread_cond_signal(&rwlp->writer_ok);
+        else if (wr)
+            pthread_cond_broadcast(&rwlp->readers_ok);
+    }
+    else
+    {
+        /* Case 3: wakeup a waiting readers first. Otherwise wakeup writer */
+        //Prioritizes readers for 2b (Case A) and 2c (Case B)
+        if (gbRwait)
+            pthread_cond_broadcast(&rwlp->readers_ok);
+        else if (gbWwait)
+            pthread_cond_signal(&rwlp->writer_ok);
+    }
 }
 
 P437* QueueTop(Q437 *ptrQ) {
@@ -181,7 +232,6 @@ P437* QueuePop(Q437 *ptrQ) {
 //int constT2read=10; //spend 10s to read
 int constT2read; //spend 10s to read
 int constT2write; //spend 1s to write
-int constPriority; //
 //int timers=60*60; // default one hour, real time about 4-10 secs
 int timers;
 //double meanR=10.0, meanW = 2.0, gbTstart;
@@ -237,6 +287,16 @@ void EnterReader1(P437 *ptr, int threadid) {
     // try to Enter the room
     rwl_rdlock(&myLock);
     if (gbRcnt>data.roomRmax) data.roomRmax = gbRcnt;
+}
+
+void EnterReader2(P437 *ptr, int threadid) {
+    // try to Enter the room
+    rwl_rdlock2(&myLock);
+}
+
+void EnterReader3(P437 *ptr, int threadid) {
+    // try to Enter the room
+    rwl_rdlock3(&myLock);
 }
 
 void DoReader(P437 *ptr, int threadid) {
@@ -367,9 +427,16 @@ void *Wwork(void *ptr) {
                     LeaveWriter1(pptr,th_id);
                     break;
                 case 2:
-                case 3:
+                    EnterWriter1(pptr,th_id);
+                    DoWriter(pptr,th_id);
+                    LeaveWriter1(pptr,th_id);
                     break;
-            } 
+                case 3:
+                    EnterWriter1(pptr,th_id);
+                    DoWriter(pptr,th_id);
+                    LeaveWriter1(pptr,th_id);
+                    break;
+            }
         }
         while (GetTime()>(k+1)) k=GetTime(); // may work overtime, catch up
         pthread_yield();
@@ -391,10 +458,18 @@ void *Rwork(void *ptr) {
                     EnterReader1(pptr,th_id);
                     DoReader(pptr,th_id);
                     LeaveReader1(pptr,th_id);
-                case 2:
-                case 3:
                     break;
-            } 
+                case 2:
+                    EnterReader2(pptr,th_id);
+                    DoReader(pptr,th_id);
+                    LeaveReader1(pptr,th_id);
+                    break;
+                case 3:
+                    EnterReader3(pptr,th_id);
+                    DoReader(pptr,th_id);
+                    LeaveReader1(pptr,th_id);
+                    break;
+            }
         }
         while (GetTime()>(k+1)) k=GetTime(); // may work overtime, catch up
         pthread_yield();
