@@ -90,9 +90,13 @@ rwl_rdlock(rwl_t *rwlp)
     pthread_mutex_lock(&rwlp->m);
     while (rwlp->rwlock < 0 || rwlp->waiting_writers)
     {
+        gbRwait++; // Increment the number of waiting readers in the queue
         pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
+        gbRwait--; // Decrement the number of waiting readers in the queue
     }
 
+    // Set room to busy and increment the number of readers in the room
+    gbRoomBusy = 1; gbRcnt++;
     rwlp->rwlock++;
     pthread_mutex_unlock(&rwlp->m);
 }
@@ -105,11 +109,15 @@ rwl_wrlock(rwl_t *rwlp)
     pthread_mutex_lock(&rwlp->m);
     while (rwlp->rwlock != 0) {
         rwlp->waiting_writers++;
-        gbWcnt++;
+        gbWwait++;  // Increment the number of writers waiting in the queue
         pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
         rwlp->waiting_writers--;
-        gbWcnt--;
+        gbWwait--; // Decrement the number of writers in the queue
     }
+
+    // Set room to busy for writer and increment the number of writers in room
+    gbRoomBusy = 1;
+    gbWcnt++;
     rwlp->rwlock = -1;
     pthread_mutex_unlock(&rwlp->m);
 }
@@ -123,9 +131,17 @@ rwl_unlock(rwl_t *rwlp)
 
     pthread_mutex_lock(&rwlp->m);
     if (rwlp->rwlock < 0) /* rwlock < 0 if locked for writing */
+    {
         rwlp->rwlock = 0;
+        gbWcnt--;
+        gbRoomBusy = 0;
+    }
     else
+    {
         rwlp->rwlock--;
+        gbRcnt--;
+        if (gbRcnt == 0) gbRoomBusy = 0;
+    }
     /*
      * Keep flags that show if there are waiting readers or writers so
      * that we can wake them up outside the monitor lock.
@@ -138,6 +154,7 @@ rwl_unlock(rwl_t *rwlp)
         pthread_cond_signal(&rwlp->writer_ok);
     else if (wr)
         pthread_cond_broadcast(&rwlp->readers_ok);
+
 }
 
 P437* QueueTop(Q437 *ptrQ) {
@@ -161,23 +178,28 @@ P437* QueuePop(Q437 *ptrQ) {
 }
 
 // option parameter, set once
-int constT2read=10; //spend 10s to read
-int constT2write=1; //spend 1s to write
-int constPriority=0; //
-int timers=60*60; // default one hour, real time about 4-10 secs
-double meanR=10.0, meanW = 2.0, gbTstart;
+//int constT2read=10; //spend 10s to read
+int constT2read; //spend 10s to read
+int constT2write; //spend 1s to write
+int constPriority; //
+//int timers=60*60; // default one hour, real time about 4-10 secs
+int timers;
+//double meanR=10.0, meanW = 2.0, gbTstart;
+double meanR, meanW, gbTstart;
 
 // Used to specify random seed
-int seed=1;
+//int seed=1;
+int seed;
 
-int threadCount = 17;
+//int threadCount = 17;
+int threadCount;
 
-//static pthread_mutex_t gbLock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t gbLock = PTHREAD_MUTEX_INITIALIZER;
 //static pthread_mutex_t gbRLock = PTHREAD_MUTEX_INITIALIZER;
 //static pthread_mutex_t gbWLock = PTHREAD_MUTEX_INITIALIZER;
 //static pthread_cond_t gbRoomSem = PTHREAD_COND_INITIALIZER;
 
-rwl_t gbLock, gbRLock, gbWLock, gbRoomSem;
+rwl_t myLock, gbRLock, gbWLock, gbRoomSem;
 
 
 
@@ -205,15 +227,18 @@ void Sleep437(long usec) { // sleep in microsec
 // Routines to process Read/Write
 //****************************************************************
 void EnterReader0(P437 *ptr, int threadid) {
-    // try to Enter the room
-    //pthread_mutex_lock(&gbLock);
-    rwl_rdlock(&gbRLock);
-
-//    gbRoomBusy = 1;
-//    gbRcnt=1;
-    gbRoomBusy = 1; gbRcnt++;
+    // Leaving the Room
+    pthread_mutex_lock(&gbLock);
+    gbRoomBusy = 1; gbRcnt=1;
     if (gbRcnt>data.roomRmax) data.roomRmax = gbRcnt;
 }
+
+void EnterReader1(P437 *ptr, int threadid) {
+    // try to Enter the room
+    rwl_rdlock(&myLock);
+    if (gbRcnt>data.roomRmax) data.roomRmax = gbRcnt;
+}
+
 void DoReader(P437 *ptr, int threadid) {
     int wT;
     // Reading
@@ -223,25 +248,31 @@ void DoReader(P437 *ptr, int threadid) {
     data.numR++; data.sumRwait += wT;
     printf("T%02d @ %04d ID %03d RW %01d in room R%02d W%02d in waiting R%02d W%02d pending R %03d W %03d\n",
             threadid,gbVClk,ptr->pID,ptr->RWtype,gbRcnt,gbWcnt,gbRwait,gbWwait,RreqQ.len,WreqQ.len);
-    Sleep437(constT2read*1000); //spend X ms to read 
+    //printf("T%02d @ %04d ID %03d RW %01d in room R%02d W%02d in waiting R%02d W%02d pending R %03d W %03d\n",
+    //       threadid,gbVClk,ptr->pID,ptr->RWtype,gbRcnt,gbWcnt,gbRwait,gbLock.waiting_writers,RreqQ.len,WreqQ.len);
+    Sleep437(constT2read*1000); //spend X ms to read
     free(ptr);
 }
 void LeaveReader0(P437 *ptr, int threadid) {
     // Leaving the Room
-//    gbRcnt=0;
-    gbRcnt--;
+    gbRcnt=0;
     gbRoomBusy = 0;
-    //pthread_mutex_unlock(&gbLock);
-    rwl_unlock(&gbRLock);
+    pthread_mutex_unlock(&gbLock);
 }
 
+void LeaveReader1(P437 *ptr, int threadid) {
+    // Leaving the Room
+    rwl_unlock(&myLock);
+}
 void EnterWriter0(P437 *ptr, int threadid) {
     // try to Enter the room
-    //pthread_mutex_lock(&gbLock);
-    rwl_wrlock(&gbWLock);
-//    gbRoomBusy = 1;
+    pthread_mutex_lock(&gbLock);
+    gbRoomBusy = 1;
     gbWcnt=1;
-//    gbWcnt++;
+}
+void EnterWriter1(P437 *ptr, int threadid) {
+    // try to Enter the room
+    rwl_wrlock(&myLock);
 }
 
 void DoWriter(P437 *ptr, int threadid) {
@@ -258,11 +289,13 @@ void DoWriter(P437 *ptr, int threadid) {
 }
 void LeaveWriter0(P437 *ptr, int threadid) {
     // Leaving the Room
-//    gbWcnt=0;
-//    gbWcnt--;
+    gbWcnt=0;
     gbRoomBusy = 0;
-    //pthread_mutex_unlock(&gbLock);
-    rwl_unlock(&gbWLock);
+    pthread_mutex_unlock(&gbLock);
+}
+void LeaveWriter1(P437 *ptr, int threadid) {
+    // Leaving the Room
+    rwl_unlock(&myLock);
 }
 
 //****************************************************************
@@ -307,7 +340,7 @@ void *RWcreate(void *vptr) {
                     gbVClk,gbRoomBusy,gbRwait,gbWwait,gbRcnt,gbWcnt,RreqQ.len+WreqQ.len);
         }
         // verifying R/W conditions every sec
-        //assert((gbRcnt==0&&gbWcnt==1) || (gbRcnt>=0&&gbWcnt==0));
+        assert((gbRcnt==0&&gbWcnt==1) || (gbRcnt>=0&&gbWcnt==0));
     }
 }
 
@@ -329,6 +362,9 @@ void *Wwork(void *ptr) {
                     LeaveWriter0(pptr,th_id);
                     break;
                 case 1:
+                    EnterWriter1(pptr,th_id);
+                    DoWriter(pptr,th_id);
+                    LeaveWriter1(pptr,th_id);
                     break;
                 case 2:
                 case 3:
@@ -352,6 +388,9 @@ void *Rwork(void *ptr) {
                     LeaveReader0(pptr,th_id);
                     break;
                 case 1:
+                    EnterReader1(pptr,th_id);
+                    DoReader(pptr,th_id);
+                    LeaveReader1(pptr,th_id);
                 case 2:
                 case 3:
                     break;
@@ -366,14 +405,46 @@ void *Rwork(void *ptr) {
 // main
 //****************************************************************
 int main(int argc, char *argv[]) {
-    int i, numwk=0, workerID[WORKTHREADNUM], opt;
+    int opt = 0;
+    while((opt=getopt(argc,argv,"T:R:W:X:Y:M:C:S:P:")) != -1) switch(opt) {
+            case 'T': timers=atoi(optarg);
+            break;
+            case 'R': meanR = atof(optarg);
+            printf("option -R mean arrival: mean=%2.1f \n", meanR);
+            break;
+            case 'W': meanW = atof(optarg);
+            printf("option -W mean arrival: mean=%2.1f \n", meanW);
+            break;
+            case 'X': constT2read=atoi(optarg);
+            printf("option -X Time to read secs =%03ds \n", constT2read);
+            break;
+            case 'Y': constT2write=atoi(optarg);
+            printf("option -Y Time to write secs =%03ds \n", constT2write);
+            break;
+            case 'M': threadCount=atoi(optarg);
+            printf("option -M Number of worker threads =%03ds \n", threadCount);
+            break;
+            case 'C': data.roomRmax=atoi(optarg);
+            printf("option -C Max readers allowed in the room =%03ds \n", data.roomRmax);
+            break;
+            case 'S': seed=atoi(optarg);
+            printf("option -S Random seed =%03ds \n", seed);
+            break;
+            case 'P': constPriority=atoi(optarg);
+            printf("option -P Priority mode =%d \n", constPriority);
+            break;
+            default:
+                fprintf(stderr, "Err: no such option:`%c'\n",optopt);
+        }
+    if (threadCount <= 0) threadCount = 17;
+    int i, numwk=0, workerID[WORKTHREADNUM];
     pthread_t arrv_tid, work_tid[WORKTHREADNUM];
     pthread_attr_t attrs; // try to save memory by getting a smaller stack
     struct rlimit lim; // try to be able to create more threads
 
-    //rwl_init(&gbLock);
-    rwl_init(&gbWLock);
-    rwl_init(&gbRLock);
+    rwl_init(&myLock);
+    //rwl_init(&gbWLock);
+    //rwl_init(&gbRLock);
 
     getrlimit(RLIMIT_NPROC, &lim);
     printf("old LIMIT RLIMIT_NPROC soft %d max %d\n",lim.rlim_cur,lim.rlim_max);
@@ -387,38 +458,19 @@ int main(int argc, char *argv[]) {
     srand(437); InitTime(); // real clock, starting from 0 sec
     //srand(20); InitTime(); // real clock, starting from 0 sec
     data.numR=data.numW=data.numDeny=data.sumRwait=data.sumWwait=0;
-    data.maxRwait=data.maxWwait=data.roomRmax=0;
+    //data.maxRwait=data.maxWwait=data.roomRmax=0;
+    data.maxRwait=data.maxWwait=0;
 
-    while((opt=getopt(argc,argv,"T:R:W:X:Y:M:C:S:P:")) != -1) switch(opt) {
-        case 'T': timers=atoi(optarg);
-                  break;
-        case 'R': meanR = atof(optarg);
-                  printf("option -R mean arrival: mean=%2.1f \n", meanR);
-                  break;
-        case 'W': meanW = atof(optarg);
-                  printf("option -W mean arrival: mean=%2.1f \n", meanW);
-                  break;
-        case 'X': constT2read=atoi(optarg);
-                  printf("option -X Time to read secs =%03ds \n", constT2read);
-                  break;
-        case 'Y': constT2write=atoi(optarg);
-                  printf("option -Y Time to write secs =%03ds \n", constT2write);
-                  break;
-        case 'M': WORKTHREADNUM=atoi(optarg);
-                  printf("option -M Number of worker threads =%03ds \n", WORKTHREADNUM);
-                  break;
-        case 'C': data.roomRmax=atoi(optarg);
-                  printf("option -C Max readers allowed in the room =%03ds \n", data.roomRmax);
-                  break;
-        case 'S': seed=atoi(optarg);
-                  printf("option -S Random seed =%03ds \n", seed);
-                  break;
-        case 'P': constPriority=atoi(optarg);
-                  printf("option -P Priority mode =%d \n", constPriority);
-                  break;
-        default:
-                  fprintf(stderr, "Err: no such option:`%c'\n",optopt);
-    }
+    // Sets args to default if nothing was passed in
+    if (meanR <= 0) meanR = 10.0;
+    if (timers <= 0) timers = 60*60;
+    if (meanW <= 0) meanW = 2.0;
+    if (constT2read <= 0) constT2read = 10;
+    if (constT2write <= 0) constT2write = 1;
+    if (constPriority <= 0) constPriority = 0;
+    if (seed <= 0) seed = 1;
+    if (data.roomRmax <= 0)  data.roomRmax = 0;
+
 
     QueueInit(&WreqQ); QueueInit(&RreqQ);
     // simulate 1 hour (60 minutes), between 8:00am-9:00am
