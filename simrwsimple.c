@@ -13,7 +13,10 @@ typedef enum {true=1, false=0} Bool;
 #define MAXQLEN 200
 #define WORKTHREADNUM threadCount
 #define THREADSTACK  65536
-int constPriority; //selects the case
+int constPriority; //controls the case or priority from the specs
+//These variables will help us keep track of whose turn it is for part 2c
+int reader_turn = 1;
+int writer_turn = 1;
 //****************************************************************
 // Math function to produce poisson distribution based on mean
 //****************************************************************
@@ -40,7 +43,7 @@ volatile int gbID = 0, gbVClk=0, gbRoomBusy = false;
 //****************************************************************
 // Queue handing
 typedef struct {P437 *entry[MAXQLEN]; int front, rear, len; pthread_mutex_t L;} Q437;
-Q437 RreqQ, WreqQ;
+Q437 RreqQ, WreqQ, CombinedQ;
 
 typedef struct {
     pthread_mutex_t m; /* read/write monitor lock */
@@ -71,6 +74,26 @@ P437* QueueAppend(Q437 *ptrQ, P437 *ptrEntry) {
     return ptrEntry;
 }
 
+P437* QueuePop(Q437 *ptrQ) {
+    // Post: if the Queue is not empty the front of the Queue is removed/returned
+    P437 *ptrEntry = NULL;
+    pthread_mutex_lock(&ptrQ->L);
+    if (ptrQ->len > 0) {
+        ptrEntry = ptrQ->entry[ptrQ->front];
+        ptrQ->entry[ptrQ->front] = NULL;
+        ptrQ->len--;
+        ptrQ->front = (ptrQ->front+1)%MAXQLEN;
+    }
+    pthread_mutex_unlock(&ptrQ->L);
+    return ptrEntry;
+}
+
+P437* QueueTop(Q437 *ptrQ) {
+    // Post: if the Queue is not empty the front of the Queue is returned
+    if (ptrQ->len == 0) return NULL;
+    else return(ptrQ->entry[ptrQ->front]);
+}
+
 void
 rwl_init(rwl_t *rwlp)
 {
@@ -81,8 +104,7 @@ rwl_init(rwl_t *rwlp)
     rwlp->waiting_writers = 0;
 }
 /*
- * Acquire a read lock. Multiple readers can go if there are no
- * writers.
+ * Acquire a read lock.
  */
 void
 rwl_rdlock(rwl_t *rwlp)
@@ -101,8 +123,8 @@ rwl_rdlock(rwl_t *rwlp)
     pthread_mutex_unlock(&rwlp->m);
 }
 /*
- * Acquire a read lock. Multiple readers can go if there are no
- * writers.
+ * Acquire a read lock and checks for room capacity. If the capacity
+ * of the room is met, then readers will wait.
  */
 void
 rwl_rdlock2(rwl_t *rwlp)
@@ -121,14 +143,23 @@ rwl_rdlock2(rwl_t *rwlp)
     pthread_mutex_unlock(&rwlp->m);
 }
 /*
- * Acquire a read lock. Multiple readers can go if there are no
- * writers.
+ * Acquire a read lock. In our final implementation 2d (Case C), we alternate our
+ * waiting queue. For example, if the room is filled with one or more readers and
+ * we have a writer next in line in the waiting queue, then all other readers will
+ * wait until the writer is able to fill the room.
  */
 void
 rwl_rdlock3(rwl_t *rwlp)
 {
     pthread_mutex_lock(&rwlp->m);
-    while (rwlp->rwlock < 0 || rwlp->waiting_writers)
+    P437 *newptr;
+    if (QueueEmpty(&CombinedQ) == false)
+    {
+        newptr = QueueTop(&CombinedQ);
+    }
+    //While the room is not locked by a reader and it's the not the readers turn
+    // readers will continue to wait
+    while (rwlp->rwlock < 0 || (newptr != NULL && newptr->RWtype == 1))
     {
         gbRwait++; // Increment the number of waiting readers in the queue
         pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
@@ -136,12 +167,16 @@ rwl_rdlock3(rwl_t *rwlp)
     }
 
     // Set room to busy and increment the number of readers in the room
+    QueuePop(&CombinedQ);
     gbRoomBusy = 1; gbRcnt++;
     rwlp->rwlock++;
     pthread_mutex_unlock(&rwlp->m);
 }
 /*
- * Acquire a write lock. Only a single writer can proceed.
+ * Acquire a write lock. In our final implementation 2d (Case C), we alternate our
+ * waiting queue. For example, if the room is filled with one or more readers and
+ * we have a writer next in line in the waiting queue, then all other readers will
+ * wait until the writer is able to fill the room.
  */
 void
 rwl_wrlock(rwl_t *rwlp)
@@ -156,6 +191,35 @@ rwl_wrlock(rwl_t *rwlp)
     }
 
     // Set room to busy for writer and increment the number of writers in room
+    gbRoomBusy = 1;
+    gbWcnt++;
+    rwlp->rwlock = -1;
+    pthread_mutex_unlock(&rwlp->m);
+}
+/*
+ * Acquire a write lock. Only a single writer can proceed. Because 2b (Case A)
+ * and 2c (Case B) prioritizes readers, we check if there are any readers waiting.
+ * If there are, writers will continue to wait.
+ */
+void
+rwl_wrlock3(rwl_t *rwlp)
+{
+    pthread_mutex_lock(&rwlp->m);
+    P437 *newptr;
+    if (QueueEmpty(&CombinedQ) == false)
+    {
+        newptr = QueueTop(&CombinedQ);
+    }
+    while (rwlp->rwlock != 0 || (newptr != NULL && newptr->RWtype == 0)) {
+        rwlp->waiting_writers++;
+        gbWwait++;  // Increment the number of writers waiting in the queue
+        pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
+        rwlp->waiting_writers--;
+        gbWwait--; // Decrement the number of writers in the queue
+    }
+
+    // Set room to busy for writer and increment the number of writers in room
+    QueuePop(&CombinedQ);
     gbRoomBusy = 1;
     gbWcnt++;
     rwlp->rwlock = -1;
@@ -190,42 +254,33 @@ rwl_unlock(rwl_t *rwlp)
     wr = (rwlp->waiting_writers == 0);
     pthread_mutex_unlock(&rwlp->m);
 
+
     if (constPriority == 3)
     {
-        if (ww)
-            pthread_cond_signal(&rwlp->writer_ok);
-        else if (wr)
-            pthread_cond_broadcast(&rwlp->readers_ok);
+        P437 *newptr;
+        if (QueueEmpty(&CombinedQ) == false)
+        {
+            newptr = QueueTop(&CombinedQ);
+
+            if (newptr->RWtype == 1)
+                pthread_cond_signal(&rwlp->writer_ok);
+            else if (newptr->RWtype == 0)
+                pthread_cond_broadcast(&rwlp->readers_ok);
+        }
+        else
+        {
+                pthread_cond_broadcast(&rwlp->readers_ok);
+                pthread_cond_signal(&rwlp->writer_ok);
+        }
     }
     else
     {
-        /* Case 3: wakeup a waiting readers first. Otherwise wakeup writer */
         //Prioritizes readers for 2b (Case A) and 2c (Case B)
         if (gbRwait)
             pthread_cond_broadcast(&rwlp->readers_ok);
         else if (gbWwait)
             pthread_cond_signal(&rwlp->writer_ok);
     }
-}
-
-P437* QueueTop(Q437 *ptrQ) {
-    // Post: if the Queue is not empty the front of the Queue is returned
-    if (ptrQ->len == 0) return NULL;
-    else return(ptrQ->entry[ptrQ->front]);
-}
-
-P437* QueuePop(Q437 *ptrQ) {
-    // Post: if the Queue is not empty the front of the Queue is removed/returned
-    P437 *ptrEntry = NULL;
-    pthread_mutex_lock(&ptrQ->L);
-    if (ptrQ->len > 0) {
-        ptrEntry = ptrQ->entry[ptrQ->front];
-        ptrQ->entry[ptrQ->front] = NULL;
-        ptrQ->len--;
-        ptrQ->front = (ptrQ->front+1)%MAXQLEN;
-    }
-    pthread_mutex_unlock(&ptrQ->L);
-    return ptrEntry;
 }
 
 // option parameter, set once
@@ -335,6 +390,11 @@ void EnterWriter1(P437 *ptr, int threadid) {
     rwl_wrlock(&myLock);
 }
 
+void EnterWriter3(P437 *ptr, int threadid) {
+    // try to Enter the room
+    rwl_wrlock3(&myLock);
+}
+
 void DoWriter(P437 *ptr, int threadid) {
     int wT;
     ptr->deptT = gbVClk;
@@ -432,7 +492,7 @@ void *Wwork(void *ptr) {
                     LeaveWriter1(pptr,th_id);
                     break;
                 case 3:
-                    EnterWriter1(pptr,th_id);
+                    EnterWriter3(pptr,th_id);
                     DoWriter(pptr,th_id);
                     LeaveWriter1(pptr,th_id);
                     break;
@@ -543,11 +603,11 @@ int main(int argc, char *argv[]) {
     if (constT2read <= 0) constT2read = 10;
     if (constT2write <= 0) constT2write = 1;
     if (constPriority <= 0) constPriority = 0;
-    if (seed <= 0) seed = 1;
+    if (seed <= 0) seed = 437;
     if (data.roomRmax <= 0)  data.roomRmax = 0;
 
 
-    QueueInit(&WreqQ); QueueInit(&RreqQ);
+    QueueInit(&WreqQ); QueueInit(&RreqQ); QueueInit(&CombinedQ);
     // simulate 1 hour (60 minutes), between 8:00am-9:00am
     printf("Simulating -R %2.1f/10s -W %2.1f/10s -X %03d -Y %03d -T %ds\n",
             meanR, meanW, constT2read, constT2write, timers);
