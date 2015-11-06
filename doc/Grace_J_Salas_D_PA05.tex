@@ -20,7 +20,7 @@
 
 \begin{document}
 \title{PA05}
-\author{Jayson Grace}
+\author{Jayson Grace, Dominic Salas}
 \date{\today}%
 \maketitle
 
@@ -29,7 +29,7 @@
 \pagebreak
 \pagenumbering{arabic}
 
-\centerline{\author{\textbf{Jayson Grace}}}
+\centerline{\author{\textbf{Jayson Grace, Dominic Salas}}}
 
 \subsection*{Problem 1a}
 Upon running the code, I was able to determine that the balance was not what I was expecting it to be. Instead of staying at the initial balance of 200, it would either be too big or too small. After inspecting the code, I saw that there were a number of floating point calculations happening between the calculation of balances A and B:
@@ -64,6 +64,8 @@ valgrind --tool=helgrind ./race -v
 \end{lstlisting}
 
 The threads accessing the variable without any protection appear to be the catalyst of the sporadic behavior I saw when executing the program. The behavior became less prevalent when I took the latency being introduced by all of the floating point calculations out of the equation, but it did not completely resolve the issue. In fact, this issue will persist until a form of protection is introduced into the program.
+
+\centerline{\author{\textbf{Jayson Grace, Dominic Salas}}}
 
 \subsection*{Problem 1b}
 
@@ -249,6 +251,58 @@ int main(int argc, char **argv)
 
 This adds in the semaphore created for 1b to create a lock for the block of code in which a race condition is occurring. As a result, we are able to eliminate any discrepancies introduced by the formerly unprotected balance variable and the balance is as it should be.
 
+\subsection*{Problem 2a}
+Make your own version of “simrw.c” based on simrwsimple.c provided. 
+\begin{itemize}
+\item We were able to successfully modify our code to take in all of the options as described. 
+\item We were a little confused about protecting the global data. Global locks were already implemented in the sample code given. It was unclear if additional work was required for 2a.
+\item Writers are not being starved because the basic implementation is alternating and only allowing one item in at a time. 
+\item Readers are not sharing the room with the basic implementation. Only one reader is being allowed in at a time because the current code is not distinguishing between a reader and a writer and is not setup to accommodate additional members in the room at once.
+\item ANSWER - Is finishCLK $>>$ arrvCLK? Can you estimate finishCLK based on arrvCLK, arrival rate,time to read/write?
+\end{itemize}
 
+\centerline{\author{\textbf{Jayson Grace, Dominic Salas}}}
+\subsection*{Problem 2b}
+Case A: a naive scheme in favor of readers, as long as one or more readers in the room, all writers have to wait.
+\begin{itemize}
+\item Synchronization primitives used for reader/writer coordination has been successfully implemented
+\item Writers are being starved since we're giving priority to the readers. Readers are always able to enter the room with other readers but we're also preventing writers from entering while there are readers waiting. 
+\item Readers are now sharing the room. 
+\item There is a substantial increase in the average waiting time between X=5 and X=10, which is expected since this is increasing the length of time spent in the room. 
+\end{itemize}
+
+\subsection*{Problem 2c}
+Case B: same as Case A except that the room has a capacity limit. If an additional reader comes, it has to compete with any waiting writers.
+\begin{itemize}
+\item Synchronization primitives used for reader/writer coordination has been successfully implemented
+\item From 2b or Case A you'll notice from the table that there is a large increase in the wait times and denies. The increase in wait times is expected since here we're limiting the number of readers that can be in a room all at once. The capacity limit was unspecified in this problem, but we used C=5 since that was listed in the last problem.  
+\end{itemize}
+
+\subsection*{Problem 2d}
+Case C:.a scheme with relative equal priority. For a newly arrived reader, it cannot join the room unless there is no writer being waiting.
+\begin{itemize}
+\item Synchronization primitives used for reader/writer coordination has been successfully implemented
+
+\pagebreak
+\centerline{\author{\textbf{Jayson Grace, Dominic Salas}}}
+\item You see a number of changes from A Case C. There is a big distinction between the wait times. In A we are giving priority to the readers and as a result there is a huge wait time for writers especially when we increase our time to simulate to 10. In case C, we are giving more priority to the writers so that it's more balanced out. Also, with case C, are numbers are more balanced out slightly favoring are writers. But discrepancies are far less than what is seen in case A. 
+\item With respect to the maxRoom in cases B $\&$ A, we are passing in the max room for our testing. However, by modifying the size of the room in case B and case C, you're naturally increasing the wait times. This is expected, since you're essentially forcing my readers to wait and naturally will cause writers to wait longer as well. 
+\end{itemize}
+
+\begin{table}[h]
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{|l|l|l|l|l|l|l|l|l|l|}
+\hline
+P        & finishCLK & numR & numW & numDeny & avgRwait & avgWwait & maxRwait & maxWwait & maxRroom \\ \hline
+=0, X=5  & 5002      & 824  & 329  & 3047    & 1054.6   & 2508.3   & 1402     & 3940     & 1        \\ \hline
+=1, X=5  & 3604      & 3484 & 717  & 0       & 0.7      & 11.3     & 10       & 59       & 14       \\ \hline
+=1, X=10 & 3873      & 3486 & 209  & 508     & 3.0      & 3138.9   & 19       & 3615     & 14       \\ \hline
+=2, X=5  & 4024      & 3486 & 203  & 508     & 109      & 3393     & 183      & 3776     & 5        \\ \hline
+=2, X=10 & 4312      & 1938 & 203  & 2061    & 386.7    & 3672.1   & 523      & 4035     & 5        \\ \hline
+=3, X=5  & 3611      & 3486 & 717  & 0       & 5.3      & 5.1      & 25       & 15       & 14       \\ \hline
+=3, X=10 & 3760      & 3450 & 717  & 36      & 152.5    & 6.6      & 230      & 32       & 14       \\ \hline
+\end{tabular}
+}
+\end{table}
 
 \end{document}
