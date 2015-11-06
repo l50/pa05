@@ -143,23 +143,16 @@ rwl_rdlock2(rwl_t *rwlp)
     pthread_mutex_unlock(&rwlp->m);
 }
 /*
- * Acquire a read lock. In our final implementation 2d (Case C), we alternate our
- * waiting queue. For example, if the room is filled with one or more readers and
- * we have a writer next in line in the waiting queue, then all other readers will
- * wait until the writer is able to fill the room.
+ * Acquire a read lock. In our final implementation 2d (Case C), readers will
+ * continue entering the room while there are no writers waiting.
  */
 void
 rwl_rdlock3(rwl_t *rwlp)
 {
     pthread_mutex_lock(&rwlp->m);
-    P437 *newptr;
-    if (QueueEmpty(&CombinedQ) == false)
-    {
-        newptr = QueueTop(&CombinedQ);
-    }
     //While the room is not locked by a reader and it's the not the readers turn
     // readers will continue to wait
-    while (rwlp->rwlock < 0 || (newptr != NULL && newptr->RWtype == 1))
+    while (rwlp->rwlock < 0 || rwlp->waiting_writers || gbRcnt == data.roomRmax)
     {
         gbRwait++; // Increment the number of waiting readers in the queue
         pthread_cond_wait(&rwlp->readers_ok, &rwlp->m);
@@ -167,7 +160,6 @@ rwl_rdlock3(rwl_t *rwlp)
     }
 
     // Set room to busy and increment the number of readers in the room
-    QueuePop(&CombinedQ);
     gbRoomBusy = 1; gbRcnt++;
     rwlp->rwlock++;
     pthread_mutex_unlock(&rwlp->m);
@@ -205,12 +197,7 @@ void
 rwl_wrlock3(rwl_t *rwlp)
 {
     pthread_mutex_lock(&rwlp->m);
-    P437 *newptr;
-    if (QueueEmpty(&CombinedQ) == false)
-    {
-        newptr = QueueTop(&CombinedQ);
-    }
-    while (rwlp->rwlock != 0 || (newptr != NULL && newptr->RWtype == 0)) {
+    while (rwlp->rwlock != 0) {
         rwlp->waiting_writers++;
         gbWwait++;  // Increment the number of writers waiting in the queue
         pthread_cond_wait(&rwlp->writer_ok, &rwlp->m);
@@ -219,7 +206,6 @@ rwl_wrlock3(rwl_t *rwlp)
     }
 
     // Set room to busy for writer and increment the number of writers in room
-    QueuePop(&CombinedQ);
     gbRoomBusy = 1;
     gbWcnt++;
     rwlp->rwlock = -1;
@@ -257,21 +243,13 @@ rwl_unlock(rwl_t *rwlp)
 
     if (constPriority == 3)
     {
-        P437 *newptr;
-        if (QueueEmpty(&CombinedQ) == false)
-        {
-            newptr = QueueTop(&CombinedQ);
 
-            if (newptr->RWtype == 1)
-                pthread_cond_signal(&rwlp->writer_ok);
-            else if (newptr->RWtype == 0)
-                pthread_cond_broadcast(&rwlp->readers_ok);
-        }
-        else
-        {
-                pthread_cond_broadcast(&rwlp->readers_ok);
-                pthread_cond_signal(&rwlp->writer_ok);
-        }
+        if (ww) pthread_cond_signal(&rwlp->writer_ok);
+        else if (wr) pthread_cond_broadcast(&rwlp->readers_ok);
+
+//        if (wr) pthread_cond_broadcast(&rwlp->readers_ok);
+//        else if (ww) pthread_cond_signal(&rwlp->writer_ok);
+
     }
     else
     {
@@ -282,6 +260,7 @@ rwl_unlock(rwl_t *rwlp)
             pthread_cond_signal(&rwlp->writer_ok);
     }
 }
+
 
 // option parameter, set once
 //int constT2read=10; //spend 10s to read
@@ -363,8 +342,6 @@ void DoReader(P437 *ptr, int threadid) {
     data.numR++; data.sumRwait += wT;
     printf("T%02d @ %04d ID %03d RW %01d in room R%02d W%02d in waiting R%02d W%02d pending R %03d W %03d\n",
             threadid,gbVClk,ptr->pID,ptr->RWtype,gbRcnt,gbWcnt,gbRwait,gbWwait,RreqQ.len,WreqQ.len);
-    //printf("T%02d @ %04d ID %03d RW %01d in room R%02d W%02d in waiting R%02d W%02d pending R %03d W %03d\n",
-    //       threadid,gbVClk,ptr->pID,ptr->RWtype,gbRcnt,gbWcnt,gbRwait,gbLock.waiting_writers,RreqQ.len,WreqQ.len);
     Sleep437(constT2read*1000); //spend X ms to read
     free(ptr);
 }
@@ -590,7 +567,8 @@ int main(int argc, char *argv[]) {
     pthread_attr_init(&attrs);
     pthread_attr_setstacksize(&attrs, THREADSTACK); //using 64K stack instead of 2M
 
-    srand(437); InitTime(); // real clock, starting from 0 sec
+    if (seed <= 0) seed = 437;
+    srand(seed); InitTime(); // real clock, starting from 0 sec
     //srand(20); InitTime(); // real clock, starting from 0 sec
     data.numR=data.numW=data.numDeny=data.sumRwait=data.sumWwait=0;
     //data.maxRwait=data.maxWwait=data.roomRmax=0;
@@ -603,7 +581,6 @@ int main(int argc, char *argv[]) {
     if (constT2read <= 0) constT2read = 10;
     if (constT2write <= 0) constT2write = 1;
     if (constPriority <= 0) constPriority = 0;
-    if (seed <= 0) seed = 437;
     if (data.roomRmax <= 0)  data.roomRmax = 0;
 
 
